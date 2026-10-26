@@ -1,0 +1,879 @@
+openapi: 3.0.3
+info:
+  title: CleanLoop API
+  version: 1.0.0
+  description: |
+    Local REST API for the CleanLoop smart waste collection pilot in Northbridge.
+    No authentication is required for the demo. All responses are JSON unless
+    an export endpoint is used.
+servers:
+  - url: http://localhost:4000/api
+    description: Local development service
+tags:
+  - name: System
+  - name: Bins
+  - name: Fleet
+  - name: Routes
+  - name: Schedule
+  - name: Analytics
+  - name: Settings
+  - name: Exports
+
+paths:
+  /health:
+    get:
+      tags: [System]
+      summary: Service health
+      responses:
+        '200':
+          description: Service is running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  service: { type: string, example: cleanloop-api }
+                  version: { type: string, example: 1.0.0 }
+                  city: { type: string, example: Northbridge }
+                  dataStore: { type: string, example: db.json }
+                  routes: { type: integer, example: 12 }
+                  bins: { type: integer, example: 36 }
+
+  /meta:
+    get:
+      tags: [System]
+      summary: City, zones, depots, drivers and objectives
+      responses:
+        '200':
+          description: Reference metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  city: { type: string }
+                  country: { type: string }
+                  region: { type: string }
+                  zones:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+                  depots:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+                  drivers:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+                  wasteTypes:
+                    type: array
+                    items: { type: string }
+                  objectives:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+
+  /dashboard:
+    get:
+      tags: [System]
+      summary: Operational overview payload
+      responses:
+        '200':
+          description: KPIs, today's routes, alerts, activity and week series
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /bins:
+    get:
+      tags: [Bins]
+      summary: List smart bins
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+          description: Search name, address or ID
+        - in: query
+          name: zone
+          schema: { type: string }
+        - in: query
+          name: type
+          schema:
+            type: string
+            enum: [general, recycling, organic, glass]
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [normal, attention, critical, offline]
+      responses:
+        '200':
+          description: Filtered bins with summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bins:
+                    type: array
+                    items: { $ref: '#/components/schemas/Bin' }
+                  total: { type: integer }
+                  allCount: { type: integer }
+                  summary:
+                    type: object
+                    additionalProperties: true
+    post:
+      tags: [Bins]
+      summary: Register a smart bin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, address, zoneId, type]
+              properties:
+                name: { type: string }
+                address: { type: string }
+                zoneId: { type: string }
+                type:
+                  type: string
+                  enum: [general, recycling, organic, glass]
+                capacityLiters: { type: integer, minimum: 120, maximum: 5000 }
+                fillPct: { type: number, minimum: 0, maximum: 100 }
+                fillRatePerDay: { type: number, minimum: 0, maximum: 25 }
+                sensorStatus:
+                  type: string
+                  enum: [online, offline]
+                sensorBattery: { type: number, minimum: 0, maximum: 100 }
+                priority:
+                  type: string
+                  enum: [normal, high]
+                accessNotes: { type: string }
+                lastCollected: { type: string, format: date }
+      responses:
+        '201':
+          description: Bin created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bin: { $ref: '#/components/schemas/Bin' }
+                  message: { type: string }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /bins/{id}:
+    parameters:
+      - $ref: '#/components/parameters/BinId'
+    get:
+      tags: [Bins]
+      summary: Get a bin with collection history
+      responses:
+        '200':
+          description: Bin and recent collections
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bin: { $ref: '#/components/schemas/Bin' }
+                  history:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Bins]
+      summary: Update a bin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Bin updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bin: { $ref: '#/components/schemas/Bin' }
+                  message: { type: string }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Bins]
+      summary: Remove a bin that is not on an active or planned route
+      responses:
+        '200':
+          description: Bin removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /bins/{id}/request-pickup:
+    parameters:
+      - $ref: '#/components/parameters/BinId'
+    post:
+      tags: [Bins]
+      summary: Flag a bin for priority collection
+      responses:
+        '200':
+          description: Priority applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bin: { $ref: '#/components/schemas/Bin' }
+                  message: { type: string }
+
+  /vehicles:
+    get:
+      tags: [Fleet]
+      summary: List vehicles with drivers and routes
+      responses:
+        '200':
+          description: Fleet list and summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vehicles:
+                    type: array
+                    items: { $ref: '#/components/schemas/Vehicle' }
+                  summary:
+                    type: object
+                    additionalProperties: true
+    post:
+      tags: [Fleet]
+      summary: Add a vehicle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, model, plate, driverId]
+              properties:
+                name: { type: string }
+                model: { type: string }
+                plate: { type: string }
+                type:
+                  type: string
+                  enum: [electric, hybrid, diesel]
+                capacityKg: { type: number, minimum: 1000, maximum: 20000 }
+                rangeKm: { type: number, minimum: 50, maximum: 900 }
+                driverId: { type: string }
+                body: { type: string }
+      responses:
+        '201':
+          description: Vehicle created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /vehicles/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Fleet]
+      summary: Update a vehicle or its status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [available, on-route, charging, maintenance]
+                fuelPct: { type: number, minimum: 0, maximum: 100 }
+                capacityKg: { type: number, minimum: 1000, maximum: 20000 }
+                driverId: { type: string }
+                nextService: { type: string, format: date }
+      responses:
+        '200':
+          description: Vehicle updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Fleet]
+      summary: Remove an unassigned vehicle
+      responses:
+        '200':
+          description: Vehicle removed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /drivers:
+    get:
+      tags: [Fleet]
+      summary: List drivers with assigned vehicles
+      responses:
+        '200':
+          description: Driver roster
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  drivers:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+
+  /routes:
+    get:
+      tags: [Routes]
+      summary: List routes
+      parameters:
+        - in: query
+          name: date
+          schema: { type: string, format: date }
+        - in: query
+          name: start
+          schema: { type: string, format: date }
+        - in: query
+          name: end
+          schema: { type: string, format: date }
+        - in: query
+          name: status
+          schema: { type: string }
+          description: Comma-separated list of statuses
+      responses:
+        '200':
+          description: Matching routes and summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  routes:
+                    type: array
+                    items: { $ref: '#/components/schemas/Route' }
+                  count: { type: integer }
+                  summary:
+                    type: object
+                    additionalProperties: true
+
+  /routes/optimize:
+    post:
+      tags: [Routes]
+      summary: Generate and persist optimized routes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                date: { type: string, format: date }
+                threshold: { type: number, minimum: 0, maximum: 100 }
+                objective:
+                  type: string
+                  enum: [balanced, cost, emissions, service]
+                vehicleIds:
+                  type: array
+                  items: { type: string }
+                depotId: { type: string }
+                replace: { type: boolean, default: true }
+      responses:
+        '200':
+          description: Optimized plan
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  date: { type: string, format: date }
+                  objective: { type: string }
+                  threshold: { type: number }
+                  stats:
+                    type: object
+                    additionalProperties: true
+                  skipped:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+                  routes:
+                    type: array
+                    items: { $ref: '#/components/schemas/Route' }
+                  message: { type: string }
+
+  /routes/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    get:
+      tags: [Routes]
+      summary: Get a single route
+      responses:
+        '200':
+          description: Route and recent activity
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  route: { $ref: '#/components/schemas/Route' }
+                  activity:
+                    type: array
+                    items: { type: object, additionalProperties: true }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /routes/{id}/status:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    patch:
+      tags: [Routes]
+      summary: Change route status
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [scheduled, active, completed, cancelled, delayed]
+      responses:
+        '200':
+          description: Updated route
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  route: { $ref: '#/components/schemas/Route' }
+                  message: { type: string }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /routes/{id}/advance:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string }
+    post:
+      tags: [Routes]
+      summary: Mark the next stop collected
+      responses:
+        '200':
+          description: Updated route
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  route: { $ref: '#/components/schemas/Route' }
+                  message: { type: string }
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /schedule:
+    get:
+      tags: [Schedule]
+      summary: Week schedule
+      parameters:
+        - in: query
+          name: start
+          schema: { type: string, format: date }
+        - in: query
+          name: days
+          schema: { type: integer, minimum: 1, maximum: 14, default: 7 }
+      responses:
+        '200':
+          description: Days, routes, crews and summary
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /schedule/auto:
+    post:
+      tags: [Schedule]
+      summary: Forecast and auto-plan a date window
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                startDate: { type: string, format: date }
+                days: { type: integer, minimum: 1, maximum: 14 }
+                threshold: { type: number, minimum: 0, maximum: 100 }
+      responses:
+        '200':
+          description: Generated plan and refreshed week
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /analytics:
+    get:
+      tags: [Analytics]
+      summary: Operational analytics
+      parameters:
+        - in: query
+          name: range
+          schema:
+            type: integer
+            enum: [7, 14, 30]
+            default: 30
+      responses:
+        '200':
+          description: Series, composition, zones and route comparison
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /priority-bins:
+    get:
+      tags: [Bins]
+      summary: Forecast bins needing collection soon
+      responses:
+        '200':
+          description: Priority forecast
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bins:
+                    type: array
+                    items: { $ref: '#/components/schemas/Bin' }
+
+  /settings:
+    get:
+      tags: [Settings]
+      summary: Get operational settings
+      responses:
+        '200':
+          description: Current settings
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Settings' }
+    put:
+      tags: [Settings]
+      summary: Update operational settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Settings' }
+      responses:
+        '200':
+          description: Settings saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  settings: { $ref: '#/components/schemas/Settings' }
+                  message: { type: string }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /resources:
+    get:
+      tags: [System]
+      summary: Dataset counts, downloads, API index and documentation links
+      responses:
+        '200':
+          description: Resource catalogue
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /admin/reset:
+    post:
+      tags: [System]
+      summary: Restore the seeded demo dataset
+      responses:
+        '200':
+          description: Dataset restored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  settings: { $ref: '#/components/schemas/Settings' }
+                  stats:
+                    type: object
+                    additionalProperties: true
+
+  /export/bins.csv:
+    get:
+      tags: [Exports]
+      summary: Bin dataset CSV
+      responses:
+        '200':
+          description: CSV file
+          content:
+            text/csv:
+              schema: { type: string }
+
+  /export/vehicles.csv:
+    get:
+      tags: [Exports]
+      summary: Fleet register CSV
+      responses:
+        '200':
+          description: CSV file
+          content:
+            text/csv:
+              schema: { type: string }
+
+  /export/routes.csv:
+    get:
+      tags: [Exports]
+      summary: Route plan CSV
+      responses:
+        '200':
+          description: CSV file
+          content:
+            text/csv:
+              schema: { type: string }
+
+  /export/bins.geojson:
+    get:
+      tags: [Exports]
+      summary: Bin point GeoJSON
+      responses:
+        '200':
+          description: GeoJSON FeatureCollection
+          content:
+            application/geo+json:
+              schema: { type: object, additionalProperties: true }
+
+  /export/dataset.json:
+    get:
+      tags: [Exports]
+      summary: Complete operational snapshot
+      responses:
+        '200':
+          description: JSON dataset
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+
+components:
+  parameters:
+    BinId:
+      in: path
+      name: id
+      required: true
+      schema: { type: string }
+      example: BIN-001
+
+  responses:
+    BadRequest:
+      description: Missing or invalid field
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Conflicting state
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: { type: string }
+
+    Message:
+      type: object
+      properties:
+        message: { type: string }
+
+    Bin:
+      type: object
+      properties:
+        id: { type: string, example: BIN-001 }
+        name: { type: string }
+        address: { type: string }
+        zoneId: { type: string }
+        zone:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            color: { type: string }
+        type:
+          type: string
+          enum: [general, recycling, organic, glass]
+        capacityLiters: { type: number }
+        fillPct: { type: number }
+        fillRatePerDay: { type: number }
+        status:
+          type: string
+          enum: [normal, attention, critical, offline]
+        priority:
+          type: string
+          enum: [normal, high]
+        ageDays: { type: integer }
+        daysUntilFull: { type: integer, nullable: true }
+        nextCollection:
+          type: object
+          properties:
+            date: { type: string, format: date }
+            source:
+              type: string
+              enum: [scheduled, forecast]
+            eta: { type: integer, nullable: true }
+        sensorStatus:
+          type: string
+          enum: [online, offline]
+        sensorBattery: { type: number }
+        accessNotes: { type: string }
+
+    Vehicle:
+      type: object
+      properties:
+        id: { type: string, example: VH-01 }
+        name: { type: string }
+        model: { type: string }
+        plate: { type: string }
+        type:
+          type: string
+          enum: [electric, hybrid, diesel]
+        capacityKg: { type: number }
+        status:
+          type: string
+          enum: [available, on-route, charging, maintenance]
+        fuelPct: { type: number }
+        rangeKm: { type: number }
+        driver: { type: object, nullable: true, additionalProperties: true }
+        currentRoute: { type: object, nullable: true, additionalProperties: true }
+        nextRoute: { type: object, nullable: true, additionalProperties: true }
+
+    Stop:
+      type: object
+      properties:
+        binId: { type: string }
+        order: { type: integer }
+        eta: { type: integer }
+        serviceMinutes: { type: number }
+        weightKg: { type: number }
+        completed: { type: boolean }
+        completedAt: { type: string, nullable: true }
+        bin: { $ref: '#/components/schemas/Bin' }
+
+    Route:
+      type: object
+      properties:
+        id: { type: string, example: RT-3181 }
+        name: { type: string }
+        date: { type: string, format: date }
+        status:
+          type: string
+          enum: [scheduled, active, completed, cancelled, delayed]
+        color: { type: string }
+        source: { type: string }
+        objective: { type: string }
+        depotId: { type: string }
+        vehicleId: { type: string }
+        driverId: { type: string }
+        shiftStart: { type: string }
+        endTime: { type: string }
+        distanceKm: { type: number }
+        baselineDistanceKm: { type: number }
+        durationMin: { type: integer }
+        weightKg: { type: number }
+        capacityKg: { type: number }
+        co2SavedKg: { type: number }
+        cost: { type: number }
+        costSaved: { type: number }
+        progress: { type: number }
+        completedStops: { type: integer }
+        remainingStops: { type: integer }
+        stops:
+          type: array
+          items: { $ref: '#/components/schemas/Stop' }
+        driver: { type: object, nullable: true, additionalProperties: true }
+        vehicle: { type: object, nullable: true, additionalProperties: true }
+
+    Settings:
+      type: object
+      properties:
+        city: { type: string }
+        country: { type: string }
+        region: { type: string }
+        depotId: { type: string }
+        collectionThreshold: { type: number }
+        maxAgeDays: { type: number }
+        shiftStart: { type: string }
+        shiftEnd: { type: string }
+        travelSpeedKph: { type: number }
+        costPerKm: { type: number }
+        laborPerHour: { type: number }
+        fuelPrice: { type: number }
+        dieselCo2KgPerL: { type: number }
+        costPerTonne: { type: number }
+        optimizationObjective:
+          type: string
+          enum: [balanced, cost, emissions, service]
+        autoScheduleDays: { type: number }
+        notifications:
+          type: object
+          properties:
+            criticalBin: { type: boolean }
+            sensorOffline: { type: boolean }
+            routeDelay: { type: boolean }
+            weeklyDigest: { type: boolean }
+        updatedAt: { type: string, format: date-time }
